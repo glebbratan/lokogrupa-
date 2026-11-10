@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ru"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Угадай дату — Локальная группа</title>
+<script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<style>
+:root{--bg:#e9e7f7;--ink:#1e1b3a;--pop:#ff4d6d;--blue:#3a5bff;--card:#fff;--mut:#6b688a}
+@media(prefers-color-scheme:dark){:root{--bg:#16142b;--ink:#f1efff;--card:#25224a;--mut:#a09dc8}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.45 "Trebuchet MS","Segoe UI",sans-serif}
+#app{max-width:640px;margin:0 auto;padding:20px 16px 40px}
+h1{font-size:clamp(2.2rem,9vw,3.4rem);line-height:.95;margin:.4em 0 .3em;letter-spacing:-.03em;transform:rotate(-1.5deg)}
+h2{margin:.2em 0}
+.card{background:var(--card);border-radius:18px;padding:16px;margin:14px 0;box-shadow:0 5px 0 var(--ink)}
+button{font:inherit;font-weight:700;border:3px solid var(--ink);background:var(--pop);color:#fff;border-radius:14px;padding:12px 18px;cursor:pointer;margin:4px 6px 4px 0}
+button.alt{background:var(--card);color:var(--ink)}
+button:disabled{opacity:.5;cursor:default}
+button:focus-visible,input:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+input[type=text]{font:inherit;padding:11px;border:3px solid var(--ink);border-radius:12px;background:var(--card);color:var(--ink);width:100%;margin:6px 0}
+img.pic{width:100%;max-height:60vh;object-fit:contain;background:#0002;border-radius:12px;display:block}
+input[type=range]{width:100%;accent-color:var(--pop);height:36px}
+.big{font-size:2rem;font-weight:800;text-align:center}
+.mut{color:var(--mut)}
+table{width:100%;border-collapse:collapse}td,th{padding:7px 4px;text-align:left;border-bottom:1px solid #8884}td:last-child,th:last-child{text-align:right}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+</style></head><body><div id="app">Загрузка…</div>
+<script>
+const app=document.getElementById('app'),ROUNDS=5;
+const MN=['янв','фев','мар','апр','мая','июн','июл','авг','сен','окт','ноя','дек'];
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtM=ts=>{const d=new Date(ts*1000);return MN[d.getMonth()]+' '+d.getFullYear()};
+const fmtD=ts=>{const d=new Date(ts*1000);return d.getDate()+' '+MN[d.getMonth()]+' '+d.getFullYear()};
+let POSTS=[],M0,MN_COUNT,K;
+let name=localStorage.getItem('lg-name')||'',isHost=false,peer,hostConn,conns={},G,view={phase:'menu'};
+
+fetch('posts.json').then(r=>r.json()).then(p=>{
+  POSTS=p;const ts=p.map(x=>x[1]),a=new Date(Math.min(...ts)*1000),b=new Date(Math.max(...ts)*1000);
+  M0=a.getFullYear()*12+a.getMonth();MN_COUNT=b.getFullYear()*12+b.getMonth()-M0+1;
+  K=Math.max(90,(Math.max(...ts)-Math.min(...ts))/86400*0.08);render();
+}).catch(()=>app.textContent='Не удалось загрузить posts.json');
+
+const idxToTs=i=>{const m=M0+i;return Math.floor(new Date(Math.floor(m/12),m%12,15).getTime()/1000)};
+const score=(g,t)=>Math.round(5000*Math.exp(-Math.abs(g-t)/86400/K));
+
+/* ---------- ХОСТ (он же сервер комнаты; в соло — единственный игрок) ---------- */
+function newGame(max){G={max,players:{host:{name,total:0,guess:null}},posts:[],i:-1,open:true}}
+function bc(m){Object.values(conns).forEach(c=>c.send(m));handle(m)}
+function lobby(){bc({t:'lobby',code:G.code,max:G.max,players:Object.values(G.players).map(p=>p.name)})}
+function startGame(){
+  G.open=false;const s=new Set();while(s.size<ROUNDS)s.add(Math.floor(Math.random()*POSTS.length));
+  G.posts=[...s].map(i=>POSTS[i]);G.i=-1;Object.values(G.players).forEach(p=>p.total=0);nextRound();
+}
+function nextRound(){
+  G.i++;if(G.i>=ROUNDS){bc({t:'end',board:board()});return}
+  Object.values(G.players).forEach(p=>p.guess=null);
+  bc({t:'round',i:G.i,url:G.posts[G.i][2]});
+}
+const board=()=>Object.values(G.players).map(p=>({name:p.name,total:p.total})).sort((a,b)=>b.total-a.total);
+function onGuess(id,v){
+  const p=G.players[id];if(!p||p.guess!==null)return;p.guess=v;
+  const all=Object.values(G.players),done=all.filter(p=>p.guess!==null).length;
+  if(done<all.length){bc({t:'wait',done,total:all.length});return}
+  const truth=G.posts[G.i][1];
+  all.forEach(p=>{p.pts=score(p.guess,truth);p.total+=p.pts});
+  bc({t:'result',truth,last:G.i===ROUNDS-1,res:all.map(p=>({name:p.name,guess:p.guess,pts:p.pts,total:p.total}))});
+}
+function hostHandle(c){
+  c.on('data',m=>{
+    if(m.t==='join'){
+      if(!G.open||Object.keys(G.players).length>=G.max){c.send({t:'full'});return}
+      G.players[c.peer]={name:String(m.name).slice(0,16)||'Игрок',total:0,guess:null};conns[c.peer]=c;lobby();
+    }else if(m.t==='guess')onGuess(c.peer,+m.v);
+  });
+  c.on('close',()=>{delete conns[c.peer];delete G.players[c.peer];if(G.open)lobby()});
+}
+
+/* ---------- ИНТЕРФЕЙС ---------- */
+function handle(m){
+  if(m.t==='round')view={phase:'round',i:m.i,url:m.url,sent:false};
+  else if(m.t==='wait'){view.wait=m;if(view.sent)return render();return}
+  else view={phase:m.t,...m};
+  render();
+}
+function render(){
+  const v=view;
+  if(!POSTS.length)return;
+  if(v.phase==='menu')app.innerHTML=`<h1>Угадай дату</h1><p class="mut">Показываем картинку из «Локальной группы» — вы называете, когда она вышла. Чем ближе, тем больше очков.</p>
+  <div class="card"><label>Ваше имя<input type="text" id="nm" maxlength="16" value="${esc(name)}"></label>
+  <button id="solo">Играть одному</button>
+  <h2>Играть вместе</h2><div class="row"><button class="alt" data-max="2">Создать комнату на 2</button><button class="alt" data-max="4">Создать комнату на 4</button></div>
+  <input type="text" id="code" placeholder="Код комнаты" autocapitalize="characters"><button id="join">Войти по коду</button></div>
+  <p class="mut">В базе ${POSTS.length} картинок.</p>`,
+  bindMenu();
+  else if(v.phase==='lobby')app.innerHTML=`<h1>Комната</h1><div class="card"><div class="big">${esc(v.code)}</div><p class="mut" style="text-align:center">Отправьте код друзьям (мест: ${v.max})</p>
+  <p>${v.players.map(esc).join(', ')}</p>${isHost?`<button id="go" ${v.players.length<2?'disabled':''}>Начать</button>`:'<p class="mut">Ждём, пока создатель начнёт…</p>'}</div>`,
+  document.getElementById('go')&&(document.getElementById('go').onclick=startGame);
+  else if(v.phase==='round'){
+    app.innerHTML=`<p class="mut">Раунд ${v.i+1} из ${ROUNDS}</p><img class="pic" src="${esc(v.url)}" alt="Угадайте дату">
+    <div class="card"><div class="big" id="lab"></div><input type="range" id="sl" min="0" max="${MN_COUNT-1}" value="${Math.floor(MN_COUNT/2)}" ${v.sent?'disabled':''}>
+    <button id="ok" ${v.sent?'disabled':''}>${v.sent?'Ждём остальных'+(v.wait?` (${v.wait.done}/${v.wait.total})`:'…'):'Ответить'}</button></div>`;
+    const sl=document.getElementById('sl'),lab=document.getElementById('lab'),upd=()=>lab.textContent=fmtM(idxToTs(+sl.value));upd();sl.oninput=upd;
+    document.getElementById('ok').onclick=()=>{view.sent=true;const g=idxToTs(+sl.value);isHost?onGuess('host',g):hostConn.send({t:'guess',v:g});render()};
+  }else if(v.phase==='result')app.innerHTML=`<p class="mut">Правильный ответ</p><div class="big">${fmtD(v.truth)}</div>
+    <div class="card"><table><tr><th>Игрок</th><th>Ответ</th><th>Очки</th></tr>${v.res.map(r=>`<tr><td>${esc(r.name)}</td><td>${fmtM(r.guess)}</td><td>+${r.pts} (${r.total})</td></tr>`).join('')}</table>
+    ${isHost?`<button id="nx">${v.last?'Итоги':'Дальше'}</button>`:'<p class="mut">Дальше нажмёт создатель комнаты…</p>'}</div>`,
+    document.getElementById('nx')&&(document.getElementById('nx').onclick=nextRound);
+  else if(v.phase==='end')app.innerHTML=`<h1>Итоги</h1><div class="card"><table>${v.board.map((r,i)=>`<tr><td>${i+1}. ${esc(r.name)}</td><td>${r.total}</td></tr>`).join('')}</table>
+    <button id="home">В меню</button></div>`,document.getElementById('home').onclick=()=>{peer&&peer.destroy();conns={};isHost=false;view={phase:'menu'};render()};
+  else if(v.phase==='full')app.innerHTML=`<div class="card">Комната заполнена или игра уже идёт.<br><button onclick="view={phase:'menu'};render()">В меню</button></div>`;
+}
+function bindMenu(){
+  const nm=()=>{name=(document.getElementById('nm').value.trim()||'Игрок');localStorage.setItem('lg-name',name)};
+  document.getElementById('solo').onclick=()=>{nm();isHost=true;newGame(1);startGame()};
+  document.querySelectorAll('[data-max]').forEach(b=>b.onclick=()=>{
+    nm();isHost=true;newGame(+b.dataset.max);G.code=Math.random().toString(36).slice(2,6).toUpperCase();
+    peer=new Peer('lgdate-'+G.code);peer.on('open',lobby);peer.on('connection',hostHandle);
+    peer.on('error',e=>{alert('Ошибка соединения: '+e.type);view={phase:'menu'};render()});
+  });
+  document.getElementById('join').onclick=()=>{
+    nm();const code=document.getElementById('code').value.trim().toUpperCase();if(!code)return;
+    isHost=false;peer=new Peer();
+    peer.on('open',()=>{hostConn=peer.connect('lgdate-'+code,{reliable:true});
+      hostConn.on('open',()=>hostConn.send({t:'join',name}));hostConn.on('data',handle);
+      hostConn.on('close',()=>{alert('Создатель комнаты вышел');view={phase:'menu'};render()})});
+    peer.on('error',e=>alert(e.type==='peer-unavailable'?'Комната с таким кодом не найдена':'Ошибка: '+e.type));
+  };
+}
+</script></body></html>
