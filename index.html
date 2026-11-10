@@ -33,7 +33,7 @@ const fmtD=ts=>{const d=new Date(ts*1000);return d.getDate()+' '+MN[d.getMonth()
 let POSTS=[],M0,MN_COUNT,K;
 let name=localStorage.getItem('lg-name')||'',isHost=false,peer,hostConn,conns={},G,view={phase:'menu'};
 
-fetch('posts.json').then(r=>r.json()).then(p=>{
+fetch('docs/posts.json').then(r=>r.json()).then(p=>{
   POSTS=p;const ts=p.map(x=>x[1]),a=new Date(Math.min(...ts)*1000),b=new Date(Math.max(...ts)*1000);
   M0=a.getFullYear()*12+a.getMonth();MN_COUNT=b.getFullYear()*12+b.getMonth()-M0+1;
   K=Math.max(90,(Math.max(...ts)-Math.min(...ts))/86400*0.08);render();
